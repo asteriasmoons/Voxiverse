@@ -28,6 +28,13 @@ final class VoxiverseManagedApp: Identifiable {
     var createdDate: Date = Date.now
     var updatedDate: Date = Date.now
 
+    // Placeholder links for now — set real per-app URLs in SampleData.swift
+    // (or change these defaults) once available.
+    var githubURL: String = "https://github.com"
+    var testFlightURL: String = "https://testflight.apple.com"
+    var appStoreURL: String = "https://apps.apple.com"
+    var websiteURL: String = "https://example.com"
+
     @Relationship(deleteRule: .nullify, inverse: \VoxiverseReport.app)
     var reports: [VoxiverseReport]? = []
 
@@ -56,7 +63,11 @@ final class VoxiverseManagedApp: Identifiable {
         betaBuildCount: Int,
         sortOrder: Int,
         createdDate: Date,
-        updatedDate: Date
+        updatedDate: Date,
+        githubURL: String = "https://github.com",
+        testFlightURL: String = "https://testflight.apple.com",
+        appStoreURL: String = "https://apps.apple.com",
+        websiteURL: String = "https://example.com"
     ) {
         self.id = id
         self.name = name
@@ -73,5 +84,38 @@ final class VoxiverseManagedApp: Identifiable {
         self.sortOrder = sortOrder
         self.createdDate = createdDate
         self.updatedDate = updatedDate
+        self.githubURL = githubURL
+        self.testFlightURL = testFlightURL
+        self.appStoreURL = appStoreURL
+        self.websiteURL = websiteURL
+    }
+}
+
+enum VoxiverseAppIdentity {
+    static func canonicalID(_ value: String) -> String {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        switch normalized {
+        case "asterium", "im.lystaria.asterium":
+            return "sterium"
+        case "lumey", "loomey", "im.lystaria.lumey", "im.lystaria.loomey":
+            return "loomey"
+        case "markly", "im.lystaria.markly":
+            return "markly"
+        default:
+            return normalized
+        }
+    }
+}
+
+extension Array where Element == VoxiverseManagedApp {
+    func matchingApp(id appID: String) -> VoxiverseManagedApp? {
+        let canonicalID = VoxiverseAppIdentity.canonicalID(appID)
+        return first { app in
+            VoxiverseAppIdentity.canonicalID(app.id) == canonicalID ||
+                VoxiverseAppIdentity.canonicalID(app.bundleIdentifier) == canonicalID
+        }
     }
 }

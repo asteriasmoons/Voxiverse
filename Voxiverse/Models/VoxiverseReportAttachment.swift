@@ -9,6 +9,7 @@ final class VoxiverseReportAttachment: Identifiable {
     var assetName: String = "document"
     var localFileName: String?
     var report: VoxiverseReport?
+    var featureRequest: VoxiverseFeatureRequest?
 
     static var attachmentDirectory: URL {
         FileManager.default
@@ -19,6 +20,14 @@ final class VoxiverseReportAttachment: Identifiable {
     var localFileURL: URL? {
         guard let localFileName, !localFileName.isEmpty else { return nil }
         return Self.attachmentDirectory.appendingPathComponent(localFileName, isDirectory: false)
+    }
+
+    var displayName: String {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stableIdentifier = Self.stableIdentifier(fromResolvedFilename: trimmedName) {
+            return stableIdentifier
+        }
+        return trimmedName.isEmpty ? "Attachment" : trimmedName
     }
 
     init(
@@ -39,5 +48,18 @@ final class VoxiverseReportAttachment: Identifiable {
         let directory = attachmentDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    static func stableIdentifier(fromResolvedFilename filename: String) -> String? {
+        let lastPathComponent = URL(fileURLWithPath: filename).lastPathComponent
+        guard let dotIndex = lastPathComponent.firstIndex(of: ".") else { return nil }
+
+        let prefix = String(lastPathComponent[..<dotIndex])
+        let suffixStart = lastPathComponent.index(after: dotIndex)
+        let suffix = String(lastPathComponent[suffixStart...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard UUID(uuidString: prefix) != nil, !suffix.isEmpty else { return nil }
+        return suffix
     }
 }

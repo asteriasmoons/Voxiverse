@@ -1,14 +1,31 @@
 import SwiftUI
 import UIKit
+import SwiftData
 
 struct ReportDetailView: View {
+    @Environment(\.modelContext) private var modelContext
     let report: VoxiverseReport
     let apps: [VoxiverseManagedApp]
     @State private var selectedAttachment: VoxiverseReportAttachment?
+    @State private var selectedStatus: String
+    @State private var expandedDropdownID: String?
+    @State private var isUpdatingStatus = false
+    @State private var statusError: String?
+    @State private var showConversation = false
+    @State private var conversationState: ReportConversationState = .notStarted
+    @State private var conversationUnreadCount = 0
+
+    init(report: VoxiverseReport, apps: [VoxiverseManagedApp], openConversationOnAppear: Bool = false) {
+        self.report = report
+        self.apps = apps
+        _selectedStatus = State(initialValue: report.status.rawValue)
+        _showConversation = State(initialValue: openConversationOnAppear)
+    }
 
     private var app: VoxiverseManagedApp? {
-        apps.first(where: { $0.id == report.appID })
+        apps.matchingApp(id: report.appID)
     }
+
 
     var body: some View {
         ZStack {
@@ -23,10 +40,28 @@ struct ReportDetailView: View {
                 .transition(.opacity)
                 .zIndex(10)
             }
+
+            if showConversation {
+                VoxiverseReportConversationView(context: conversationContext) {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showConversation = false
+                    }
+                    refreshConversationSummary()
+                }
+                .transition(.opacity)
+                .zIndex(20)
+            }
         }
         .background(VoxiverseColor.background)
         .navigationBarBackButtonHidden(true)
         .animation(.easeInOut(duration: 0.16), value: selectedAttachment?.id)
+        .animation(.easeInOut(duration: 0.16), value: showConversation)
+        .onChange(of: selectedStatus) { _, newValue in
+            statusSelectionChanged(newValue)
+        }
+        .task {
+            await refreshConversationSummaryAsync()
+        }
     }
 
     private var reportContent: some View {
@@ -35,14 +70,28 @@ struct ReportDetailView: View {
                 VoxiverseHeader(title: report.reportID, subtitle: "Report detail", closeButton: true)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(report.title)
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(VoxiverseColor.primaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(report.title)
+                            .font(.system(size: 28, weight: .black, design: .rounded))
+                            .foregroundStyle(VoxiverseColor.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 8)
+
+                        ReportConversationIconButton(
+                            state: conversationState,
+                            unreadCount: conversationUnreadCount,
+                            frosted: true
+                        ) {
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                showConversation = true
+                            }
+                        }
+                    }
 
                     HStack(spacing: 8) {
-                        VoxiverseStatusBadge(title: report.status.rawValue, accent: statusColor)
-                        VoxiverseStatusBadge(title: report.priority.rawValue, accent: priorityColor)
+                        frostedBadge(report.status.rawValue, tint: statusColor)
+                        frostedBadge(report.priority.rawValue, tint: priorityColor)
                     }
                 }
                 .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
@@ -50,50 +99,50 @@ struct ReportDetailView: View {
                 VStack(alignment: .leading, spacing: 11) {
                     VoxiverseSectionHeader(title: "Report Metadata")
                     VoxiverseSurfaceCard {
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
-                            VoxiverseMetadataTile(label: "App", value: app?.name ?? "Unknown App")
-                            VoxiverseMetadataTile(label: "Reporter", value: report.reporter)
-                            VoxiverseMetadataTile(label: "Report Type", value: report.reportType.rawValue)
-                            VoxiverseMetadataTile(label: "Submitted", value: report.submittedDate.formatted(.dateTime.month(.abbreviated).day().year()))
-                        }
-                    }
-                }
-                .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
+                        VStack(alignment: .leading, spacing: 12) {
+                            VStack(spacing: 9) {
+                                HStack(spacing: 9) {
+                                    metaTile("App", app?.name ?? "Unknown App", index: 0)
+                                    metaTile("Reporter", report.reporter, index: 1)
+                                }
+                                HStack(spacing: 9) {
+                                    metaTile("Report Type", report.reportType.rawValue, index: 2)
+                                    metaTile("Submitted", report.submittedDate.formatted(.dateTime.month(.abbreviated).day().year()), index: 3)
+                                }
+                            }
 
-                detailSection(title: "Description") {
-                    Text(report.description)
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .foregroundStyle(VoxiverseColor.secondaryText)
-                        .lineSpacing(4)
-                }
+                            VoxiverseDropdown(
+                                id: "report-status",
+                                title: "Status",
+                                options: report.allowedStatuses.map(\.rawValue),
+                                selection: $selectedStatus,
+                                expandedID: $expandedDropdownID,
+                                tint: VoxiverseFrostedPalette.purple,
+                                usesFrostedGlass: true,
+                                boldOptions: true
+                            )
+                            .opacity(isUpdatingStatus ? 0.6 : 1)
+                            .allowsHitTesting(!isUpdatingStatus)
 
-                detailSection(title: "Expected Behavior") {
-                    Text(report.expectedBehavior)
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .foregroundStyle(VoxiverseColor.secondaryText)
-                        .lineSpacing(4)
-                }
-
-                detailSection(title: "Steps to Reproduce") {
-                    VStack(alignment: .leading, spacing: 11) {
-                        ForEach(Array(report.stepsToReproduce.enumerated()), id: \.offset) { index, step in
-                            HStack(alignment: .top, spacing: 10) {
-                                Text("\(index + 1)")
-                                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                                    .foregroundStyle(VoxiverseColor.primaryText)
-                                    .frame(width: 24, height: 24)
-                                    .background(stepAccent(for: index))
-                                    .clipShape(Circle())
-                                Text(step)
-                                    .font(.system(size: 14, weight: .medium, design: .rounded))
-                                    .foregroundStyle(VoxiverseColor.secondaryText)
+                            if let statusError {
+                                Text(statusError)
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(VoxiverseColor.secondaryAccent)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
+                    .voxiverseFrostedBorder(tint: VoxiverseFrostedPalette.purple, cornerRadius: 18)
+                }
+                .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
+
+                if report.reportType == .betaFeedback {
+                    betaFeedbackSections
+                } else {
+                    bugReportSections
                 }
 
-                detailSection(title: "Attachments") {
+                detailSection(title: "Attachments", borderTint: VoxiverseFrostedPalette.berry) {
                     if let attachments = report.attachments, !attachments.isEmpty {
                         VStack(spacing: 0) {
                             ForEach(attachments, id: \.id) { attachment in
@@ -102,22 +151,7 @@ struct ReportDetailView: View {
                                         selectedAttachment = attachment
                                     }
                                 } label: {
-                                    HStack(spacing: 11) {
-                                        VoxiverseAssetIcon(assetName: attachment.assetName, size: 21, tint: VoxiverseColor.indicator)
-                                            .frame(width: 28)
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(attachment.name)
-                                                .font(.system(size: 14, weight: .bold, design: .rounded))
-                                                .foregroundStyle(VoxiverseColor.primaryText)
-                                            Text(attachment.detail)
-                                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                                .foregroundStyle(VoxiverseColor.secondaryText)
-                                        }
-                                        Spacer()
-                                        VoxiverseAssetIcon(assetName: "chevright", size: 15, tint: VoxiverseColor.secondaryText)
-                                    }
-                                    .contentShape(Rectangle())
-                                    .padding(.vertical, 9)
+                                    attachmentRow(attachment)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -129,14 +163,20 @@ struct ReportDetailView: View {
                     }
                 }
 
-                detailSection(title: "App Diagnostics") {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
-                        VoxiverseMetadataTile(label: "Device", value: report.deviceModel)
-                        VoxiverseMetadataTile(label: "iOS Version", value: report.iOSVersion)
-                        VoxiverseMetadataTile(label: "App Version", value: report.appVersion)
-                        VoxiverseMetadataTile(label: "Build", value: report.buildNumber)
-                        VoxiverseMetadataTile(label: "Timestamp", value: report.submittedDate.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
-                        VoxiverseMetadataTile(label: "Screen", value: report.screenName)
+                detailSection(title: "App Diagnostics", borderTint: VoxiverseFrostedPalette.blue) {
+                    VStack(spacing: 9) {
+                        HStack(spacing: 9) {
+                            metaTile("Device", report.deviceModel, index: 0)
+                            metaTile("iOS Version", report.iOSVersion, index: 1)
+                        }
+                        HStack(spacing: 9) {
+                            metaTile("App Version", report.appVersion, index: 2)
+                            metaTile("Build", report.buildNumber, index: 3)
+                        }
+                        HStack(spacing: 9) {
+                            metaTile("Timestamp", report.submittedDate.formatted(.dateTime.month(.abbreviated).day().hour().minute()), index: 4)
+                            metaTile("Screen", report.reportType == .betaFeedback ? "Beta Feedback" : report.screenName, index: 5)
+                        }
                     }
                 }
             }
@@ -144,21 +184,188 @@ struct ReportDetailView: View {
         }
     }
 
-    private func detailSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    private var conversationContext: ReportConversationContext {
+        ReportConversationContext(report: report, app: app)
+    }
+
+    private func refreshConversationSummary() {
+        Task {
+            await refreshConversationSummaryAsync()
+        }
+    }
+
+    private func refreshConversationSummaryAsync() async {
+        let summary = await VoxiverseReportConversationService.fetchSummary(context: conversationContext)
+        conversationState = summary.state
+        conversationUnreadCount = summary.staffUnreadCount
+    }
+
+    @MainActor
+    private func statusSelectionChanged(_ rawValue: String) {
+        guard
+            let newStatus = report.allowedStatuses.first(where: { $0.rawValue == rawValue }),
+            newStatus != report.status
+        else { return }
+
+        isUpdatingStatus = true
+        Task {
+            do {
+                try await VoxiverseCloudKitReportSync.updateStatus(newStatus, for: report, in: modelContext)
+                statusError = nil
+            } catch {
+                selectedStatus = report.status.rawValue
+                statusError = error.localizedDescription
+            }
+            isUpdatingStatus = false
+        }
+    }
+
+    @ViewBuilder
+    private var betaFeedbackSections: some View {
+        detailSection(title: "Feedback Details", borderTint: VoxiverseFrostedPalette.berry) {
+            HStack(spacing: 9) {
+                glassMetaTile(label: "Area", value: report.category, tint: VoxiverseFrostedPalette.purple)
+                glassMetaTile(label: "Experience", value: report.overallExperience, tint: VoxiverseFrostedPalette.berry)
+            }
+        }
+
+        feedbackTextSection(title: "What Did You Test?", text: report.testedWhat.isEmpty ? report.description : report.testedWhat, borderTint: VoxiverseFrostedPalette.blue)
+        feedbackTextSection(title: "What Worked Well?", text: report.workedWell, borderTint: VoxiverseFrostedPalette.purple)
+        feedbackTextSection(title: "What Could Be Better?", text: report.couldBeBetter, borderTint: VoxiverseFrostedPalette.berry)
+        feedbackTextSection(title: "Anything Unexpected?", text: report.anythingUnexpected, borderTint: VoxiverseFrostedPalette.blue)
+        feedbackTextSection(title: "Additional Thoughts", text: report.internalNotes, borderTint: VoxiverseFrostedPalette.purple)
+    }
+
+    private var bugReportSections: some View {
+        Group {
+            detailSection(title: "Description", borderTint: VoxiverseFrostedPalette.berry) {
+                Text(report.description)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(VoxiverseColor.secondaryText)
+                    .lineSpacing(4)
+            }
+
+            detailSection(title: "Expected Behavior", borderTint: VoxiverseFrostedPalette.blue) {
+                Text(report.expectedBehavior)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(VoxiverseColor.secondaryText)
+                    .lineSpacing(4)
+            }
+
+            detailSection(title: "Steps to Reproduce", borderTint: VoxiverseFrostedPalette.purple) {
+                VStack(alignment: .leading, spacing: 11) {
+                    ForEach(Array(report.stepsToReproduce.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("\(index + 1)")
+                                .font(.system(size: 12, weight: .black, design: .rounded))
+                                .foregroundStyle(Color.white)
+                                .frame(width: 24, height: 24)
+                                .background(
+                                    VoxiverseFrostedGlassMaterial(
+                                        tint: VoxiverseFrostedPalette.color(at: index),
+                                        cornerRadius: 12
+                                    )
+                                )
+                                .clipShape(Circle())
+                            Text(step)
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(VoxiverseColor.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func feedbackTextSection(title: String, text: String, borderTint: Color) -> some View {
+        detailSection(title: title, borderTint: borderTint) {
+            Text(text.isEmpty ? "No response was provided." : text)
+                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .foregroundStyle(text.isEmpty ? VoxiverseColor.secondaryText.opacity(0.7) : VoxiverseColor.secondaryText)
+                .lineSpacing(4)
+        }
+    }
+
+    private func detailSection<Content: View>(title: String, borderTint: Color? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 11) {
             VoxiverseSectionHeader(title: title)
             VoxiverseSurfaceCard {
                 content()
             }
+            .voxiverseFrostedBorder(tint: borderTint ?? Color.clear, cornerRadius: 18, when: borderTint != nil)
         }
         .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
+    }
+
+    // MARK: - Beta Feedback theming helpers
+
+    /// A metadata tile that becomes a frosted glass tile in the Beta Feedback
+    /// layout (alternating Purple/Berry/Blue), and stays the plain tile
+    /// otherwise so bug reports are unchanged.
+    private func metaTile(_ label: String, _ value: String, index: Int) -> some View {
+        glassMetaTile(label: label, value: value, tint: VoxiverseFrostedPalette.color(at: index))
+    }
+
+    /// Compact frosted glass tile preserving the metadata typography/sizing.
+    private func glassMetaTile(label: String, value: String, tint: Color) -> some View {
+        VoxiverseFrostedGlassCard(tint: tint, cornerRadius: 13, contentPadding: 13, minHeight: 68) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(label.uppercased())
+                    .font(.system(size: 10, weight: .black, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.8))
+                Text(value)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+        }
+    }
+
+    /// Attachment row: Beta Feedback moves the (berry) file icon above the
+    /// chevright and matches their sizes; other report types keep the original.
+    private func attachmentRow(_ attachment: VoxiverseReportAttachment) -> some View {
+        HStack(spacing: 11) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(attachment.displayName)
+                    .font(.system(size: 14, weight: .black, design: .rounded))
+                    .foregroundStyle(VoxiverseColor.primaryText)
+                Text(attachment.detail)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(VoxiverseColor.secondaryText)
+            }
+
+            Spacer()
+
+            VStack(spacing: 8) {
+                VoxiverseFrostedGlassIcon(assetName: attachment.assetName, size: 21, tint: VoxiverseFrostedPalette.berry)
+                VoxiverseFrostedGlassIcon(assetName: "chevright", size: 21, tint: VoxiverseFrostedPalette.silver)
+            }
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 9)
+    }
+
+    /// Status pill frosted like the App Detail View title-card badge:
+    /// white label over `VoxiverseFrostedGlassMaterial` tinted by the badge
+    /// color. The shared `VoxiverseStatusBadge` is left unchanged.
+    private func frostedBadge(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .black, design: .rounded))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(VoxiverseFrostedGlassMaterial(tint: tint, cornerRadius: 9))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private var statusColor: Color {
         switch report.status {
         case .new: VoxiverseColor.secondaryAccent
-        case .inProgress: VoxiverseColor.primaryAction
-        case .resolved, .closed: VoxiverseColor.indicator
+        case .reviewing, .inProgress: VoxiverseColor.primaryAction
+        case .resolved, .reviewed, .closed: VoxiverseColor.indicator
+        case .actionNeeded: VoxiverseColor.secondaryAccent
         }
     }
 
@@ -170,16 +377,9 @@ struct ReportDetailView: View {
         }
     }
 
-    private func stepAccent(for index: Int) -> Color {
-        switch index % 3 {
-        case 0: VoxiverseColor.primaryAction
-        case 1: VoxiverseColor.secondaryAccent
-        default: VoxiverseColor.indicator
-        }
-    }
 }
 
-private struct VoxiverseAttachmentPreviewOverlay: View {
+struct VoxiverseAttachmentPreviewOverlay: View {
     let attachment: VoxiverseReportAttachment
     let onClose: () -> Void
 
@@ -203,9 +403,9 @@ private struct VoxiverseAttachmentPreviewOverlay: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Attachment")
-                            .font(.system(size: 31, weight: .bold, design: .rounded))
+                            .font(.system(size: 31, weight: .black, design: .rounded))
                             .foregroundStyle(VoxiverseColor.primaryText)
-                        Text(attachment.name)
+                        Text(attachment.displayName)
                             .font(.system(size: 14, weight: .medium, design: .rounded))
                             .foregroundStyle(VoxiverseColor.secondaryText)
                             .lineLimit(1)
@@ -232,7 +432,7 @@ private struct VoxiverseAttachmentPreviewOverlay: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                             Text(hasLocalFile ? "This attachment is saved, but Voxiverse cannot preview this file type yet." : "This attachment file is not available on this device yet.")
-                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                .font(.system(size: 15, weight: .black, design: .rounded))
                                 .foregroundStyle(VoxiverseColor.primaryText)
                                 .fixedSize(horizontal: false, vertical: true)
 
@@ -243,6 +443,7 @@ private struct VoxiverseAttachmentPreviewOverlay: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .voxiverseFrostedBorder(tint: VoxiverseFrostedPalette.purple, cornerRadius: 18)
 
                 Spacer(minLength: 0)
             }

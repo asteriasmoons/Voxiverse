@@ -63,13 +63,21 @@ struct VoxiverseDropdown: View {
     let options: [String]
     @Binding var selection: String
     @Binding var expandedID: String?
+    /// Tint used only when `usesFrostedGlass` is true.
+    var tint: Color = VoxiverseColor.primaryAction
+    /// Opt-in: render the closed control and expanded menu with the approved
+    /// frosted-glass material. Default false preserves the original appearance
+    /// everywhere this component is already used.
+    var usesFrostedGlass: Bool = false
+    /// When true, unselected options render bold (selected stays heavy).
+    var boldOptions: Bool = false
 
     private var isExpanded: Bool { expandedID == id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased())
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: 10, weight: .black, design: .rounded))
                 .foregroundStyle(VoxiverseColor.secondaryText)
 
             Button {
@@ -80,26 +88,25 @@ struct VoxiverseDropdown: View {
                 HStack(spacing: 10) {
                     Text(selection)
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundStyle(VoxiverseColor.primaryText)
+                        .foregroundStyle(usesFrostedGlass ? Color.white : VoxiverseColor.primaryText)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     VoxiverseAssetIcon(
                         assetName: isExpanded ? "chevup" : "chevdown",
                         size: 16,
-                        tint: VoxiverseColor.primaryAction
+                        tint: usesFrostedGlass ? Color.white : VoxiverseColor.primaryAction
                     )
                 }
                 .padding(.horizontal, 13)
                 .frame(minHeight: 46)
-                .background(VoxiverseColor.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(
-                            isExpanded ? VoxiverseColor.primaryAction : VoxiverseColor.divider,
-                            lineWidth: 1
-                        )
+                .modifier(
+                    VoxiverseDropdownSurface(
+                        cornerRadius: 14,
+                        isHighlighted: isExpanded,
+                        tint: tint,
+                        usesFrostedGlass: usesFrostedGlass
+                    )
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
 
@@ -117,47 +124,117 @@ struct VoxiverseDropdown: View {
                                     Text(option)
                                         .font(.system(
                                             size: 14,
-                                            weight: option == selection ? .bold : .medium,
+                                            weight: option == selection ? .black : (boldOptions ? .bold : .medium),
                                             design: .rounded
                                         ))
-                                        .foregroundStyle(
-                                            option == selection
-                                                ? VoxiverseColor.primaryText
-                                                : VoxiverseColor.secondaryText
-                                        )
+                                        .foregroundStyle(optionTextColor(isSelected: option == selection))
                                     Spacer()
                                     if option == selection {
                                         VoxiverseAssetIcon(
                                             assetName: "checkwavy",
                                             size: 15,
-                                            tint: VoxiverseColor.primaryAction
+                                            tint: usesFrostedGlass ? Color.white : VoxiverseColor.primaryAction
                                         )
                                     }
                                 }
                                 .padding(.horizontal, 13)
                                 .frame(minHeight: 42)
-                                .background(
-                                    option == selection
-                                        ? VoxiverseColor.raisedSurface
-                                        : VoxiverseColor.surface
-                                )
+                                .background(optionRowBackground(isSelected: option == selection))
                             }
                             .buttonStyle(.plain)
                         }
                     }
                 }
                 .frame(maxHeight: 180)
-                .background(VoxiverseColor.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(VoxiverseColor.primaryAction.opacity(0.34), lineWidth: 1)
+                .modifier(
+                    VoxiverseDropdownMenuSurface(
+                        cornerRadius: 14,
+                        tint: tint,
+                        usesFrostedGlass: usesFrostedGlass
+                    )
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .shadow(color: VoxiverseColor.background.opacity(0.72), radius: 12, y: 8)
                 .zIndex(5)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .zIndex(isExpanded ? 5 : 0)
+    }
+
+    @ViewBuilder
+    private func optionRowBackground(isSelected: Bool) -> some View {
+        if usesFrostedGlass {
+            if isSelected {
+                Color.white.opacity(0.16)
+            } else {
+                Color.clear
+            }
+        } else {
+            if isSelected {
+                VoxiverseColor.raisedSurface
+            } else {
+                VoxiverseColor.surface
+            }
+        }
+    }
+
+    private func optionTextColor(isSelected: Bool) -> Color {
+        if usesFrostedGlass {
+            return isSelected ? Color.white : Color.white.opacity(0.72)
+        } else {
+            return isSelected ? VoxiverseColor.primaryText : VoxiverseColor.secondaryText
+        }
+    }
+}
+
+/// Background for a dropdown's closed control: frosted glass when opted in,
+/// otherwise the original dark surface + stroke (unchanged default).
+private struct VoxiverseDropdownSurface: ViewModifier {
+    let cornerRadius: CGFloat
+    let isHighlighted: Bool
+    let tint: Color
+    let usesFrostedGlass: Bool
+
+    func body(content: Content) -> some View {
+        if usesFrostedGlass {
+            content
+                .background(VoxiverseFrostedGlassMaterial(tint: tint, cornerRadius: cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            content
+                .background(VoxiverseColor.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(
+                            isHighlighted ? VoxiverseColor.primaryAction : VoxiverseColor.divider,
+                            lineWidth: 1
+                        )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+}
+
+/// Background for a dropdown's expanded menu: the same frosted glass when opted
+/// in, otherwise the original dark surface + stroke (unchanged default).
+private struct VoxiverseDropdownMenuSurface: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color
+    let usesFrostedGlass: Bool
+
+    func body(content: Content) -> some View {
+        if usesFrostedGlass {
+            content
+                .background(VoxiverseFrostedGlassMaterial(tint: tint, cornerRadius: cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            content
+                .background(VoxiverseColor.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(VoxiverseColor.primaryAction.opacity(0.34), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
     }
 }

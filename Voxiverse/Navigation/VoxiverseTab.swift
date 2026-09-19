@@ -20,10 +20,10 @@ enum VoxiverseTab: String, CaseIterable, Identifiable {
     var assetName: String {
         switch self {
         case .home: "houseoutline"
-        case .apps: "appsphone"
+        case .apps: "sparkledevice"
         case .centerAction: "addwavy"
-        case .reports: "chartcircle"
-        case .requests: "inbox"
+        case .reports: "starladder"
+        case .requests: "bulbxoxo"
         }
     }
 }

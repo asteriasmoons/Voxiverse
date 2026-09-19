@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct VoxiverseRootNavigationView: View {
+    @EnvironmentObject private var deepLinkRouter: VoxiverseDeepLinkRouter
+
     let apps: [VoxiverseManagedApp]
     let reports: [VoxiverseReport]
     let featureRequests: [VoxiverseFeatureRequest]
+    let activities: [VoxiverseActivity]
 
     @State private var selectedTab: VoxiverseTab = .home
     @State private var homePath: [VoxiverseRoute] = []
@@ -24,6 +27,12 @@ struct VoxiverseRootNavigationView: View {
         }
         .background(VoxiverseColor.background.ignoresSafeArea())
         .preferredColorScheme(.dark)
+        .onAppear {
+            openPendingReportConversation()
+        }
+        .onChange(of: deepLinkRouter.pendingReportConversationID) { _, _ in
+            openPendingReportConversation()
+        }
     }
 
     @ViewBuilder
@@ -34,8 +43,8 @@ struct VoxiverseRootNavigationView: View {
                 HomeView(
                     apps: apps,
                     reports: reports,
-                    attentionItems: VoxiverseSampleData.attentionItems,
-                    activities: VoxiverseSampleData.activities
+                    featureRequests: featureRequests,
+                    activities: activities
                 )
                 .navigationDestination(for: VoxiverseRoute.self) { route in
                     destination(for: route)
@@ -45,7 +54,7 @@ struct VoxiverseRootNavigationView: View {
 
         case .apps:
             NavigationStack(path: $appsPath) {
-                AppsView(apps: apps)
+                AppsView(apps: apps, reports: reports)
                     .navigationDestination(for: VoxiverseRoute.self) { route in
                         destination(for: route)
                     }
@@ -69,7 +78,10 @@ struct VoxiverseRootNavigationView: View {
 
         case .requests:
             NavigationStack(path: $requestsPath) {
-                RequestsView()
+                RequestsView(apps: apps, requests: featureRequests)
+                    .navigationDestination(for: VoxiverseRoute.self) { route in
+                        destination(for: route)
+                    }
             }
             .toolbar(.hidden, for: .navigationBar)
         }
@@ -95,6 +107,42 @@ struct VoxiverseRootNavigationView: View {
             } else {
                 missingDestination(title: "Report Not Found", assetName: "document")
             }
+
+        case .reportConversation(let reportID):
+            if let report = reports.first(where: { $0.id == reportID }) {
+                ReportDetailView(report: report, apps: apps, openConversationOnAppear: true)
+            } else {
+                missingDestination(title: "Report Not Found", assetName: "document")
+            }
+
+        case .featureRequestDetail(let requestID):
+            if let request = featureRequests.first(where: { $0.id == requestID }) {
+                FeatureRequestDetailView(request: request, apps: apps)
+            } else {
+                missingDestination(title: "Feature Request Not Found", assetName: "bulbxoxo")
+            }
+
+        case .featureRequestConversation(let requestID):
+            if let request = featureRequests.first(where: { $0.id == requestID }) {
+                FeatureRequestDetailView(request: request, apps: apps, openConversationOnAppear: true)
+            } else {
+                missingDestination(title: "Feature Request Not Found", assetName: "bulbxoxo")
+            }
+        }
+    }
+
+    private func openPendingReportConversation() {
+        guard let reportID = deepLinkRouter.consumePendingReportConversationID() else { return }
+
+        if let report = reports.first(where: { $0.reportID == reportID || $0.id == reportID }) {
+            selectedTab = .reports
+            reportsPath = [.reportConversation(report.id)]
+            return
+        }
+
+        if let request = featureRequests.first(where: { $0.id == reportID }) {
+            selectedTab = .requests
+            requestsPath = [.featureRequestConversation(request.id)]
         }
     }
 

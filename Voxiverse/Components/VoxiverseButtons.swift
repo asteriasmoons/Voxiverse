@@ -24,14 +24,10 @@ struct VoxiverseIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            VoxiverseAssetIcon(assetName: assetName, size: 20, tint: tint)
-                .frame(width: 42, height: 42)
-                .background(VoxiverseColor.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .stroke(VoxiverseColor.divider, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            // Container removed — just the icon; larger glyph + 46×46 hit target so the close control reads clearly.
+            VoxiverseAssetIcon(assetName: assetName, size: 30, tint: tint)
+                .frame(width: 46, height: 46)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -56,7 +52,7 @@ struct VoxiversePrimaryButton: View {
                     VoxiverseAssetIcon(assetName: assetName, size: 17, tint: VoxiverseColor.primaryText)
                 }
                 Text(title)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 15, weight: .black, design: .rounded))
             }
             .foregroundStyle(VoxiverseColor.primaryText)
             .padding(.horizontal, 16)
@@ -81,7 +77,7 @@ struct VoxiverseSecondaryButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(.system(size: 15, weight: .black, design: .rounded))
                 .foregroundStyle(VoxiverseColor.primaryAction)
                 .padding(.horizontal, 16)
                 .frame(minHeight: 44)

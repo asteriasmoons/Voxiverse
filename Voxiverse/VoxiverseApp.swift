@@ -10,12 +10,15 @@ import SwiftData
 
 @main
 struct VoxiverseApp: App {
+    @StateObject private var deepLinkRouter = VoxiverseDeepLinkRouter()
+
     let sharedModelContainer: ModelContainer = {
         let schema = Schema([
             VoxiverseManagedApp.self,
             VoxiverseReport.self,
             VoxiverseFeatureRequest.self,
-            VoxiverseReportAttachment.self
+            VoxiverseReportAttachment.self,
+            VoxiverseActivity.self
         ])
         let modelConfiguration = ModelConfiguration(
             "Voxiverse",
@@ -33,6 +36,10 @@ struct VoxiverseApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(deepLinkRouter)
+                .onOpenURL { url in
+                    deepLinkRouter.handle(url)
+                }
         }
         .modelContainer(sharedModelContainer)
     }

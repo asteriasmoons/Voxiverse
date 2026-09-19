@@ -20,7 +20,7 @@ struct ReportsView: View {
 
     private var filteredReports: [VoxiverseReport] {
         let matching = reports.filter { report in
-            let appName = apps.first(where: { $0.id == report.appID })?.name ?? ""
+            let appName = apps.matchingApp(id: report.appID)?.name ?? ""
             let matchesApp = selectedApp == "All Apps" || appName == selectedApp
             let matchesType = selectedType == "All Reports" || report.reportType.rawValue == selectedType
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,20 +44,21 @@ struct ReportsView: View {
                 VoxiverseHeader(title: "Reports", subtitle: "Everything that needs your attention.")
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    VoxiverseStatCard(label: "New", value: "\(count(for: .new))", accent: .secondary)
-                    VoxiverseStatCard(label: "In Progress", value: "\(count(for: .inProgress))", accent: .primary)
-                    VoxiverseStatCard(label: "Resolved", value: "\(count(for: .resolved))", accent: .indicator)
+                    VoxiverseFrostedStatCard(label: "New", value: "\(newReportCount)", baseColor: VoxiverseFrostedPalette.purple)
+                    VoxiverseFrostedStatCard(label: "In Progress", value: "\(inProgressBugCount)", baseColor: VoxiverseFrostedPalette.berry)
+                    VoxiverseFrostedStatCard(label: "Resolved", value: "\(resolvedBugCount)", baseColor: VoxiverseFrostedPalette.blue)
                 }
                 .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
 
                 VStack(alignment: .leading, spacing: 11) {
                     VoxiverseSectionHeader(title: "Find a Report")
                     VoxiverseSearchField(text: $searchText, placeholder: "Search reports or apps")
+                        .voxiverseFrostedBorder(tint: VoxiverseFrostedPalette.purple, cornerRadius: 15)
 
                     VStack(spacing: 10) {
-                        VoxiverseDropdown(id: "app", title: "App", options: appOptions, selection: $selectedApp, expandedID: $expandedDropdownID)
-                        VoxiverseDropdown(id: "type", title: "Report Type", options: typeOptions, selection: $selectedType, expandedID: $expandedDropdownID)
-                        VoxiverseDropdown(id: "sort", title: "Sort", options: ["Newest", "Oldest", "Priority"], selection: $selectedSort, expandedID: $expandedDropdownID)
+                        VoxiverseDropdown(id: "app", title: "App", options: appOptions, selection: $selectedApp, expandedID: $expandedDropdownID, tint: VoxiverseFrostedPalette.purple, usesFrostedGlass: true)
+                        VoxiverseDropdown(id: "type", title: "Report Type", options: typeOptions, selection: $selectedType, expandedID: $expandedDropdownID, tint: VoxiverseFrostedPalette.berry, usesFrostedGlass: true)
+                        VoxiverseDropdown(id: "sort", title: "Sort", options: ["Newest", "Oldest", "Priority"], selection: $selectedSort, expandedID: $expandedDropdownID, tint: VoxiverseFrostedPalette.blue, usesFrostedGlass: true)
                     }
                 }
                 .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
@@ -73,9 +74,17 @@ struct ReportsView: View {
                         )
                     } else {
                         LazyVStack(spacing: 10) {
-                            ForEach(filteredReports, id: \.id) { report in
+                            ForEach(Array(filteredReports.enumerated()), id: \.element.id) { index, report in
                                 NavigationLink(value: VoxiverseRoute.reportDetail(report.id)) {
-                                    VoxiverseReportCard(report: report, app: apps.first(where: { $0.id == report.appID }))
+                                    VoxiverseReportCard(
+                                        report: report,
+                                        app: apps.matchingApp(id: report.appID),
+                                        usesInlineAppHeader: true
+                                    )
+                                    .voxiverseFrostedBorder(
+                                        tint: VoxiverseFrostedPalette.color(at: index),
+                                        cornerRadius: 17
+                                    )
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -89,8 +98,16 @@ struct ReportsView: View {
         .background(VoxiverseColor.background)
     }
 
-    private func count(for status: VoxiverseReportStatus) -> Int {
-        reports.filter { $0.status == status }.count
+    private var newReportCount: Int {
+        reports.filter { $0.status == .new }.count
+    }
+
+    private var inProgressBugCount: Int {
+        reports.filter { $0.reportType == .bugReport && $0.status == .inProgress }.count
+    }
+
+    private var resolvedBugCount: Int {
+        reports.filter { $0.reportType == .bugReport && $0.status == .resolved }.count
     }
 
     private func priorityRank(_ priority: VoxiversePriority) -> Int {

@@ -36,10 +36,10 @@ struct VoxiverseStatCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 2))
 
             Text(value)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(.system(size: 28, weight: .black, design: .rounded))
                 .foregroundStyle(VoxiverseColor.primaryText)
             Text(label)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .black, design: .rounded))
                 .foregroundStyle(VoxiverseColor.secondaryText)
                 .lineLimit(2)
         }
@@ -61,7 +61,7 @@ struct VoxiverseStatusBadge: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .font(.system(size: 11, weight: .black, design: .rounded))
             .foregroundStyle(accent)
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
@@ -81,7 +81,7 @@ struct VoxiverseSectionHeader: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .font(.system(size: 20, weight: .black, design: .rounded))
                 .foregroundStyle(VoxiverseColor.primaryText)
             Spacer()
             if let detail {
@@ -100,16 +100,16 @@ struct VoxiverseMetadataTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(label.uppercased())
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: 10, weight: .black, design: .rounded))
                 .foregroundStyle(VoxiverseColor.secondaryText)
             Text(value)
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundStyle(VoxiverseColor.primaryText)
-                .lineLimit(2)
+                .lineLimit(1)
                 .minimumScaleFactor(0.82)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 68, maxHeight: 68, alignment: .leading)
         .background(VoxiverseColor.raisedSurface)
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
     }

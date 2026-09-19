@@ -14,7 +14,7 @@ struct VoxiverseHeader: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 31, weight: .bold, design: .rounded))
+                    .font(.system(size: 31, weight: .black, design: .rounded))
                     .foregroundStyle(VoxiverseColor.primaryText)
                     .minimumScaleFactor(0.8)
                 Text(subtitle)
