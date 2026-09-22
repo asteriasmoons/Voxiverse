@@ -47,7 +47,7 @@ enum VoxiverseActivityStore {
         in modelContext: ModelContext
     ) throws {
         let title = report.reportType == .betaFeedback ? "Beta Feedback received" : "Report received"
-        let assetName = report.reportType == .betaFeedback ? "chatsparkle" : "bug"
+        let assetName = report.reportType == .betaFeedback ? "chatstar" : "bug"
         try insertIfNeeded(
             VoxiverseActivity(
                 activityType: "received",

@@ -22,6 +22,9 @@ struct ContentView: View {
     @Query(sort: \VoxiverseActivity.date, order: .reverse)
     private var persistedActivities: [VoxiverseActivity]
 
+    @Query(sort: \VoxiverseConversation.lastActivityAt, order: .reverse)
+    private var persistedConversations: [VoxiverseConversation]
+
     init() {}
 
     var body: some View {
@@ -29,11 +32,13 @@ struct ContentView: View {
             apps: apps,
             reports: reports,
             featureRequests: featureRequests,
+            conversations: persistedConversations,
             activities: persistedActivities
         )
         .task {
             VoxiverseSampleData.seedIfNeeded(in: modelContext)
             removeLegacySampleData()
+            removeDuplicateApps()
             await VoxiverseCloudKitReportSync.refresh(into: modelContext)
 
             while !Task.isCancelled {
@@ -45,7 +50,11 @@ struct ContentView: View {
     }
 
     private var apps: [VoxiverseManagedApp] {
-        persistedApps.filter { !isRemovedApp($0) }
+        var seen: Set<String> = []
+        return persistedApps.filter { app in
+            guard !isRemovedApp(app) else { return false }
+            return seen.insert(canonicalAppKey(app)).inserted
+        }
     }
 
     private var reports: [VoxiverseReport] {
@@ -99,6 +108,43 @@ struct ContentView: View {
         return removedAppIDs.contains(id) || removedBundleIDs.contains(bundleID)
     }
 
+    @MainActor
+    private func removeDuplicateApps() {
+        guard let storedApps = try? modelContext.fetch(FetchDescriptor<VoxiverseManagedApp>()) else {
+            return
+        }
+
+        for group in Dictionary(grouping: storedApps, by: canonicalAppKey).values where group.count > 1 {
+            let ordered = group.sorted { lhs, rhs in
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.updatedDate > rhs.updatedDate
+            }
+            guard let keeper = ordered.first else { continue }
+
+            for duplicate in ordered.dropFirst() {
+                for report in duplicate.reports ?? [] {
+                    report.app = keeper
+                }
+                for request in duplicate.featureRequests ?? [] {
+                    request.app = keeper
+                }
+                modelContext.delete(duplicate)
+            }
+        }
+
+        try? modelContext.save()
+    }
+
+    private func canonicalAppKey(_ app: VoxiverseManagedApp) -> String {
+        let id = VoxiverseAppIdentity.canonicalID(app.id)
+        if !id.isEmpty { return id }
+
+        let bundleID = VoxiverseAppIdentity.canonicalID(app.bundleIdentifier)
+        if !bundleID.isEmpty { return bundleID }
+
+        return app.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
 }
 
 #Preview {
@@ -109,6 +155,7 @@ struct ContentView: View {
             VoxiverseReport.self,
             VoxiverseFeatureRequest.self,
             VoxiverseReportAttachment.self,
-            VoxiverseActivity.self
+            VoxiverseActivity.self,
+            VoxiverseConversation.self
         ], inMemory: true)
 }

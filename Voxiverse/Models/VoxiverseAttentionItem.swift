@@ -37,7 +37,7 @@ enum VoxiverseDashboardData {
             let accent: VoxiverseMetricAccent = report.priority == .critical || report.priority == .high
                 ? .secondary
                 : report.status == .actionNeeded ? .primary : .indicator
-            let assetName = report.reportType == .betaFeedback ? "chatsparkle" : "bug"
+            let assetName = report.reportType == .betaFeedback ? "chatstar" : "bug"
             let typeText = report.reportType == .betaFeedback ? "Beta Feedback" : "Bug Report"
             return VoxiverseAttentionItem(
                 id: "report-\(report.id)",

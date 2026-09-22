@@ -27,8 +27,11 @@ struct ReportConversationContext: Identifiable, Hashable {
     let reportType: String
     let reportTitle: String
     let reporterDisplayName: String
+    let conversationRecordName: String
+    let conversationZoneName: String
+    let conversationZoneOwnerName: String
 
-    init(report: VoxiverseReport, app: VoxiverseManagedApp?) {
+    init(report: VoxiverseReport, app: VoxiverseManagedApp?, conversation: VoxiverseConversation? = nil) {
         self.id = report.reportID
         self.reportID = report.reportID
         self.sourceAppID = report.appID
@@ -36,9 +39,12 @@ struct ReportConversationContext: Identifiable, Hashable {
         self.reportType = report.reportType.rawValue
         self.reportTitle = report.title
         self.reporterDisplayName = report.reporter
+        self.conversationRecordName = conversation?.conversationRecordName ?? ""
+        self.conversationZoneName = conversation?.conversationZoneName ?? ""
+        self.conversationZoneOwnerName = conversation?.conversationZoneOwnerName ?? ""
     }
 
-    init(request: VoxiverseFeatureRequest, app: VoxiverseManagedApp?) {
+    init(request: VoxiverseFeatureRequest, app: VoxiverseManagedApp?, conversation: VoxiverseConversation? = nil) {
         self.id = request.id
         self.reportID = request.id
         self.sourceAppID = request.appID
@@ -46,6 +52,9 @@ struct ReportConversationContext: Identifiable, Hashable {
         self.reportType = "Feature Request"
         self.reportTitle = request.title
         self.reporterDisplayName = request.submitter
+        self.conversationRecordName = conversation?.conversationRecordName ?? ""
+        self.conversationZoneName = conversation?.conversationZoneName ?? ""
+        self.conversationZoneOwnerName = conversation?.conversationZoneOwnerName ?? ""
     }
 }
 
@@ -55,9 +64,31 @@ struct ReportConversationMessage: Identifiable, Hashable {
     let body: String
     let createdAt: Date
     let creatorRecordName: String
+    let attachments: [ReportConversationAttachment]
+    var deliveryState: ReportConversationDeliveryState = .sent
 
     var isFromStaff: Bool {
         senderRole == .staff
+    }
+}
+
+enum ReportConversationDeliveryState: String, Codable, Hashable {
+    case sending
+    case sent
+    case failed
+}
+
+struct ReportConversationAttachment: Identifiable, Hashable, Codable {
+    let id: UUID
+    let name: String
+    let typeIdentifier: String
+    let data: Data
+
+    init(id: UUID = UUID(), name: String, typeIdentifier: String, data: Data) {
+        self.id = id
+        self.name = name
+        self.typeIdentifier = typeIdentifier
+        self.data = data
     }
 }
 
@@ -65,6 +96,7 @@ struct ReportConversationSnapshot: Identifiable, Hashable {
     let id: String
     let context: ReportConversationContext
     let state: ReportConversationState
+    let acceptsReplies: Bool
     let recordID: CKRecord.ID?
     let shareURL: URL?
     let createdAt: Date?
@@ -81,6 +113,7 @@ struct ReportConversationSnapshot: Identifiable, Hashable {
             id: context.id,
             context: context,
             state: .notStarted,
+            acceptsReplies: true,
             recordID: nil,
             shareURL: nil,
             createdAt: nil,
@@ -116,6 +149,7 @@ enum ReportConversationCloudKitSchema {
         static let reporterUserRecordName = "reporterUserRecordName"
         static let staffUserRecordName = "staffUserRecordName"
         static let invitationState = "invitationState"
+        static let acceptsReplies = "acceptsReplies"
         static let createdAt = "createdAt"
         static let updatedAt = "updatedAt"
         static let invitedAt = "invitedAt"
@@ -139,6 +173,10 @@ enum ReportConversationCloudKitSchema {
         static let body = "body"
         static let createdAt = "createdAt"
         static let clientMessageID = "clientMessageID"
+        static let attachmentCount = "attachmentCount"
+        static func attachment(_ index: Int) -> String { "attachment\(index)" }
+        static func attachmentName(_ index: Int) -> String { "attachment\(index)Name" }
+        static func attachmentType(_ index: Int) -> String { "attachment\(index)Type" }
     }
 
     enum PublicReportField {

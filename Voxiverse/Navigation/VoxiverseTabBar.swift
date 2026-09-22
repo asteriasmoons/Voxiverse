@@ -13,9 +13,7 @@ struct VoxiverseTabBar: View {
         HStack(spacing: 2) {
             VoxiverseTabItem(tab: .home, selection: $selection)
             VoxiverseTabItem(tab: .apps, selection: $selection)
-            VoxiverseCenterActionButton(isSelected: selection == .centerAction) {
-                select(.centerAction)
-            }
+            VoxiverseCenterActionButton(isSelected: false) {}
             VoxiverseTabItem(tab: .reports, selection: $selection)
             VoxiverseTabItem(tab: .requests, selection: $selection)
         }
@@ -28,11 +26,6 @@ struct VoxiverseTabBar: View {
         .shadow(color: VoxiverseColor.background.opacity(0.72), radius: 14, y: 7)
     }
 
-    private func select(_ tab: VoxiverseTab) {
-        withAnimation(.easeOut(duration: 0.18)) {
-            selection = tab
-        }
-    }
 }
 
 private struct VoxiverseTabItem: View {

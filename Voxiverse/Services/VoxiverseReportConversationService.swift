@@ -12,9 +12,19 @@ final class VoxiverseReportConversationService: ObservableObject {
     @Published private(set) var snapshot: ReportConversationSnapshot?
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
+    @Published private(set) var localOutgoingMessages: [ReportConversationMessage] = []
     @Published var errorMessage: String?
 
     private let container: CKContainer
+    private var pendingPayloads: [String: PendingOutgoingPayload] = [:]
+    private var activeMessageIDs: Set<String> = []
+
+    private struct PendingOutgoingPayload: Codable {
+        let text: String
+        let attachments: [ReportConversationAttachment]
+        let createdAt: Date
+        let conversationID: String
+    }
 
     init(container: CKContainer = CKContainer(identifier: ReportConversationCloudKitSchema.containerIdentifier)) {
         self.container = container
@@ -27,9 +37,11 @@ final class VoxiverseReportConversationService: ObservableObject {
     func load(context: ReportConversationContext, markRead: Bool = false) async {
         isLoading = true
         errorMessage = nil
+        restorePendingPayloads(for: context.id)
         do {
             let loaded = try await fetchSnapshot(context: context, markRead: markRead)
             snapshot = loaded
+            reconcileLocalMessages(with: loaded)
         } catch {
             snapshot = .notStarted(context: context)
             errorMessage = error.localizedDescription
@@ -37,28 +49,208 @@ final class VoxiverseReportConversationService: ObservableObject {
         isLoading = false
     }
 
-    func sendStaffMessage(_ rawText: String, context: ReportConversationContext) async {
+    func sendStaffMessage(
+        _ rawText: String,
+        attachments: [ReportConversationAttachment] = [],
+        context: ReportConversationContext
+    ) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        guard !isSending else { return }
+        guard !text.isEmpty || !attachments.isEmpty else { return false }
+        guard snapshot?.state != .declined else { return false }
 
-        isSending = true
+        let messageID = UUID().uuidString
+        let now = Date()
+        pendingPayloads[messageID] = PendingOutgoingPayload(text: text, attachments: attachments, createdAt: now, conversationID: context.id)
+        localOutgoingMessages.append(ReportConversationMessage(
+            id: messageID, senderRole: .staff, body: text, createdAt: now,
+            creatorRecordName: "", attachments: attachments, deliveryState: .sending
+        ))
+        updateSendingState()
         errorMessage = nil
+        Task { await processOutgoingMessage(messageID, context: context) }
+        return true
+    }
+
+    func retryStaffMessage(_ messageID: String, context: ReportConversationContext) {
+        guard pendingPayloads[messageID] != nil,
+              let index = localOutgoingMessages.firstIndex(where: { $0.id == messageID }),
+              localOutgoingMessages[index].deliveryState == .failed,
+              snapshot?.state != .declined else { return }
+        localOutgoingMessages[index].deliveryState = .sending
+        updateSendingState()
+        Task { await processOutgoingMessage(messageID, context: context) }
+    }
+
+    /// Deletes a single conversation message. Voxiverse owns the private
+    /// conversation zone, so it can remove either its own (staff) message or the
+    /// reporter's; the CloudKit delete propagates through the share so the message
+    /// disappears for both sides. A message that only exists locally (still pending
+    /// or failed to send, never persisted) is discarded from the outbox instead.
+    func deleteMessage(_ message: ReportConversationMessage, context: ReportConversationContext) async {
+        errorMessage = nil
+        let existsRemotely = snapshot?.messages.contains { $0.id == message.id } ?? false
+
+        if pendingPayloads[message.id] != nil && !existsRemotely {
+            pendingPayloads.removeValue(forKey: message.id)
+            removePersistedPayload(messageID: message.id)
+            localOutgoingMessages.removeAll { $0.id == message.id }
+            updateSendingState()
+            return
+        }
+
         do {
+            guard let pointer = try await fetchConversationPointer(context: context) else {
+                throw ConversationError.recordNotFound
+            }
+            let database = container.privateCloudDatabase
+            let root = try await fetchRecord(pointer.recordID, in: database)
+            var names = root[ReportConversationCloudKitSchema.ConversationField.messageRecordNames] as? [String] ?? []
+            let recordName = names.first { $0 == "message-\(message.id)" || $0 == message.id } ?? "message-\(message.id)"
+            let messageRecordID = CKRecord.ID(recordName: recordName, zoneID: pointer.recordID.zoneID)
+            names.removeAll { $0 == recordName }
+            root[ReportConversationCloudKitSchema.ConversationField.messageRecordNames] = names as CKRecordValue
+            root[ReportConversationCloudKitSchema.ConversationField.updatedAt] = Date() as CKRecordValue
+            let result = try await database.modifyRecords(saving: [root], deleting: [messageRecordID], savePolicy: .changedKeys, atomically: true)
+            try throwIfAnySaveFailed(result.saveResults)
+            if case .failure(let error)? = result.deleteResults[messageRecordID] {
+                throw error
+            }
+            pendingPayloads.removeValue(forKey: message.id)
+            removePersistedPayload(messageID: message.id)
+            localOutgoingMessages.removeAll { $0.id == message.id }
+            updateSendingState()
+            snapshot = try await fetchSnapshot(context: context, markRead: false)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    var displayedMessages: [ReportConversationMessage] {
+        let remote = snapshot?.messages ?? []
+        let remoteIDs = Set(remote.map(\.id))
+        return (remote + localOutgoingMessages.filter { !remoteIDs.contains($0.id) }).sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func processOutgoingMessage(_ messageID: String, context: ReportConversationContext) async {
+        guard !activeMessageIDs.contains(messageID), let payload = pendingPayloads[messageID] else { return }
+        activeMessageIDs.insert(messageID)
+        defer { activeMessageIDs.remove(messageID); updateSendingState() }
+        var finalError: Error?
+        do {
+            try persistPendingPayload(payload, messageID: messageID)
+        } catch {
+            setDeliveryState(.failed, for: messageID)
+            errorMessage = error.localizedDescription
+            return
+        }
+        for attempt in 0..<3 {
+            do {
+                try await persistStaffMessage(messageID: messageID, payload: payload, context: context)
+                setDeliveryState(.sent, for: messageID)
+                pendingPayloads.removeValue(forKey: messageID)
+                removePersistedPayload(messageID: messageID)
+                if let refreshed = try? await fetchSnapshot(context: context, markRead: true) {
+                    snapshot = refreshed
+                    reconcileLocalMessages(with: refreshed)
+                }
+                return
+            } catch {
+                finalError = error
+                if attempt < 2 { try? await Task.sleep(for: .milliseconds(180)) }
+            }
+        }
+        setDeliveryState(.failed, for: messageID)
+        errorMessage = finalError?.localizedDescription
+    }
+
+    private func persistStaffMessage(messageID: String, payload: PendingOutgoingPayload, context: ReportConversationContext) async throws {
             if let pointer = try await fetchConversationPointer(context: context) {
                 let existing = try await fetchRecord(pointer.recordID, in: container.privateCloudDatabase)
                 guard ReportConversationState(rawValue: existing.voxConversationString(ReportConversationCloudKitSchema.ConversationField.invitationState)) != .declined else {
                     throw ConversationError.declined
                 }
-                try await appendMessage(text, role: .staff, to: existing)
+                let messageRecordID = CKRecord.ID(recordName: "message-\(messageID)", zoneID: existing.recordID.zoneID)
+                if (try? await container.privateCloudDatabase.record(for: messageRecordID)) != nil { return }
+                try await appendMessage(messageID: messageID, text: payload.text, attachments: payload.attachments, createdAt: payload.createdAt, role: .staff, to: existing)
             } else {
-                _ = try await createConversationRootAndShare(context: context, firstMessage: text)
+                _ = try await createConversationRootAndShare(
+                    context: context,
+                    messageID: messageID,
+                    firstMessage: payload.text,
+                    attachments: payload.attachments,
+                    createdAt: payload.createdAt
+                )
             }
-            snapshot = try await fetchSnapshot(context: context, markRead: true)
+    }
+
+    private func setDeliveryState(_ state: ReportConversationDeliveryState, for messageID: String) {
+        guard let index = localOutgoingMessages.firstIndex(where: { $0.id == messageID }) else { return }
+        localOutgoingMessages[index].deliveryState = state
+    }
+
+    private func reconcileLocalMessages(with snapshot: ReportConversationSnapshot) {
+        let remoteIDs = Set(snapshot.messages.map(\.id))
+        for messageID in remoteIDs where pendingPayloads[messageID] != nil {
+            pendingPayloads.removeValue(forKey: messageID)
+            removePersistedPayload(messageID: messageID)
+        }
+        localOutgoingMessages.removeAll { remoteIDs.contains($0.id) }
+    }
+
+    private func restorePendingPayloads(for conversationID: String) {
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: outboxDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
+        let decoder = PropertyListDecoder()
+        for url in urls where url.pathExtension == "plist" {
+            guard let data = try? Data(contentsOf: url),
+                  let payload = try? decoder.decode(PendingOutgoingPayload.self, from: data),
+                  payload.conversationID == conversationID else { continue }
+            let messageID = url.deletingPathExtension().lastPathComponent
+            guard pendingPayloads[messageID] == nil else { continue }
+            pendingPayloads[messageID] = payload
+            localOutgoingMessages.append(ReportConversationMessage(
+                id: messageID, senderRole: .staff, body: payload.text, createdAt: payload.createdAt,
+                creatorRecordName: "", attachments: payload.attachments, deliveryState: .failed
+            ))
+        }
+    }
+
+    private var outboxDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let directory = base.appendingPathComponent("VoxiverseReportConversationOutbox", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func persistPendingPayload(_ payload: PendingOutgoingPayload, messageID: String) throws {
+        let data = try PropertyListEncoder().encode(payload)
+        try data.write(to: outboxDirectory.appendingPathComponent("\(messageID).plist"), options: .atomic)
+    }
+
+    private func removePersistedPayload(messageID: String) {
+        try? FileManager.default.removeItem(at: outboxDirectory.appendingPathComponent("\(messageID).plist"))
+    }
+
+    private func updateSendingState() {
+        isSending = localOutgoingMessages.contains { $0.deliveryState == .sending }
+    }
+
+    func setAcceptsReplies(_ enabled: Bool, context: ReportConversationContext) async {
+        errorMessage = nil
+        do {
+            guard let pointer = try await fetchConversationPointer(context: context) else {
+                throw ConversationError.recordNotFound
+            }
+            let database = container.privateCloudDatabase
+            let root = try await fetchRecord(pointer.recordID, in: database)
+            root[ReportConversationCloudKitSchema.ConversationField.acceptsReplies] = (enabled ? 1 : 0) as CKRecordValue
+            root[ReportConversationCloudKitSchema.ConversationField.updatedAt] = Date() as CKRecordValue
+            let result = try await database.modifyRecords(saving: [root], deleting: [], savePolicy: .changedKeys, atomically: true)
+            guard let saved = result.saveResults[root.recordID] else { throw ConversationError.recordNotFound }
+            _ = try saved.get()
+            snapshot = try await fetchSnapshot(context: context, markRead: false)
         } catch {
             errorMessage = error.localizedDescription
         }
-        isSending = false
     }
 
     static func fetchSummary(context: ReportConversationContext) async -> ReportConversationSnapshot {
@@ -78,6 +270,11 @@ final class VoxiverseReportConversationService: ObservableObject {
 
         let root = try await fetchRecord(pointer.recordID, in: database)
 
+        try await VoxiverseReportConversationNotificationManager.registerPrivateConversationNotifications(
+            database: database,
+            conversationRecordID: root.recordID
+        )
+
         if markRead {
             let now = Date()
             root[ReportConversationCloudKitSchema.ConversationField.staffUnreadCount] = 0 as CKRecordValue
@@ -85,16 +282,30 @@ final class VoxiverseReportConversationService: ObservableObject {
             _ = try await database.modifyRecords(saving: [root], deleting: [], savePolicy: .changedKeys, atomically: true)
         }
 
-        try await VoxiverseReportConversationNotificationManager.registerPrivateConversationNotifications(
-            database: database,
-            zoneID: root.recordID.zoneID
-        )
-
         let messages = try await fetchMessages(from: root, in: database)
+        if markRead {
+            await VoxiverseReportConversationNotificationManager.clearReadConversationBadge()
+        }
         return makeSnapshot(from: root, context: context, messages: messages)
     }
 
     private func fetchConversationPointer(context: ReportConversationContext) async throws -> ConversationPointer? {
+        if !context.conversationRecordName.isEmpty, !context.conversationZoneName.isEmpty {
+            let ownerName = context.conversationZoneOwnerName.isEmpty
+                ? CKCurrentUserDefaultName
+                : context.conversationZoneOwnerName
+            let zoneID = CKRecordZone.ID(
+                zoneName: context.conversationZoneName,
+                ownerName: ownerName
+            )
+            return ConversationPointer(
+                recordID: CKRecord.ID(
+                    recordName: context.conversationRecordName,
+                    zoneID: zoneID
+                )
+            )
+        }
+
         let publicReport = try await fetchPublicReport(context: context)
         let recordName = publicReport.voxConversationString(ReportConversationCloudKitSchema.PublicReportField.conversationRecordName)
         let zoneName = publicReport.voxConversationString(ReportConversationCloudKitSchema.PublicReportField.conversationZoneName)
@@ -116,7 +327,13 @@ final class VoxiverseReportConversationService: ObservableObject {
         )
     }
 
-    private func createConversationRootAndShare(context: ReportConversationContext, firstMessage: String) async throws -> CKRecord {
+    private func createConversationRootAndShare(
+        context: ReportConversationContext,
+        messageID: String,
+        firstMessage: String,
+        attachments: [ReportConversationAttachment],
+        createdAt: Date
+    ) async throws -> CKRecord {
         let publicReport = try await fetchPublicReport(context: context)
         guard let reporterRecordID = publicReport.creatorUserRecordID else {
             throw ConversationError.missingReporterIdentity
@@ -137,9 +354,8 @@ final class VoxiverseReportConversationService: ObservableObject {
         )
         let recordID = CKRecord.ID(recordName: recordName, zoneID: zoneID)
         let root = CKRecord(recordType: ReportConversationCloudKitSchema.RecordType.conversation, recordID: recordID)
-        let now = Date()
+        let now = createdAt
         let staffRecordName = (try? await container.userRecordID().recordName) ?? ""
-        let messageID = UUID().uuidString
         let messageRecordID = CKRecord.ID(recordName: "message-\(messageID)", zoneID: zoneID)
         let message = CKRecord(recordType: ReportConversationCloudKitSchema.RecordType.message, recordID: messageRecordID)
         message.parent = CKRecord.Reference(recordID: root.recordID, action: .none)
@@ -150,6 +366,8 @@ final class VoxiverseReportConversationService: ObservableObject {
         message[ReportConversationCloudKitSchema.MessageField.body] = firstMessage as CKRecordValue
         message[ReportConversationCloudKitSchema.MessageField.createdAt] = now as CKRecordValue
         message[ReportConversationCloudKitSchema.MessageField.clientMessageID] = messageID as CKRecordValue
+        let temporaryFiles = try writeAttachments(attachments, to: message)
+        defer { temporaryFiles.forEach { try? FileManager.default.removeItem(at: $0) } }
 
         root[ReportConversationCloudKitSchema.ConversationField.conversationID] = recordName as CKRecordValue
         root[ReportConversationCloudKitSchema.ConversationField.reportID] = context.reportID as CKRecordValue
@@ -161,6 +379,7 @@ final class VoxiverseReportConversationService: ObservableObject {
         root[ReportConversationCloudKitSchema.ConversationField.reporterUserRecordName] = reporterRecordID.recordName as CKRecordValue
         root[ReportConversationCloudKitSchema.ConversationField.staffUserRecordName] = staffRecordName as CKRecordValue
         root[ReportConversationCloudKitSchema.ConversationField.invitationState] = ReportConversationState.invited.rawValue as CKRecordValue
+        root[ReportConversationCloudKitSchema.ConversationField.acceptsReplies] = 1 as CKRecordValue
         root[ReportConversationCloudKitSchema.ConversationField.createdAt] = now as CKRecordValue
         root[ReportConversationCloudKitSchema.ConversationField.updatedAt] = now as CKRecordValue
         root[ReportConversationCloudKitSchema.ConversationField.invitedAt] = now as CKRecordValue
@@ -200,10 +419,16 @@ final class VoxiverseReportConversationService: ObservableObject {
         return try await fetchRecord(recordID, in: database)
     }
 
-    private func appendMessage(_ text: String, role: ReportConversationSenderRole, to root: CKRecord) async throws {
+    private func appendMessage(
+        messageID: String,
+        text: String,
+        attachments: [ReportConversationAttachment],
+        createdAt: Date,
+        role: ReportConversationSenderRole,
+        to root: CKRecord
+    ) async throws {
         let database = container.privateCloudDatabase
-        let now = Date()
-        let messageID = UUID().uuidString
+        let now = createdAt
         let messageRecordID = CKRecord.ID(recordName: "message-\(messageID)", zoneID: root.recordID.zoneID)
         let message = CKRecord(recordType: ReportConversationCloudKitSchema.RecordType.message, recordID: messageRecordID)
         message.parent = CKRecord.Reference(recordID: root.recordID, action: .none)
@@ -214,6 +439,8 @@ final class VoxiverseReportConversationService: ObservableObject {
         message[ReportConversationCloudKitSchema.MessageField.body] = text as CKRecordValue
         message[ReportConversationCloudKitSchema.MessageField.createdAt] = now as CKRecordValue
         message[ReportConversationCloudKitSchema.MessageField.clientMessageID] = messageID as CKRecordValue
+        let temporaryFiles = try writeAttachments(attachments, to: message)
+        defer { temporaryFiles.forEach { try? FileManager.default.removeItem(at: $0) } }
 
         var names = root[ReportConversationCloudKitSchema.ConversationField.messageRecordNames] as? [String] ?? []
         if !names.contains(messageRecordID.recordName) {
@@ -235,12 +462,45 @@ final class VoxiverseReportConversationService: ObservableObject {
 
         let shareURLString = root.voxConversationString(ReportConversationCloudKitSchema.ConversationField.shareURL)
         if !shareURLString.isEmpty, let shareURL = URL(string: shareURLString) {
-            try await updatePublicReportConversationPointer(
+            try? await updatePublicReportConversationPointer(
                 try await fetchPublicReportByID(root.voxConversationString(ReportConversationCloudKitSchema.ConversationField.reportID)),
                 conversationRecordID: root.recordID,
                 shareURL: shareURL,
                 state: ReportConversationState(rawValue: root.voxConversationString(ReportConversationCloudKitSchema.ConversationField.invitationState)) ?? .invited,
                 timestamp: now
+            )
+        }
+    }
+
+    private func writeAttachments(_ attachments: [ReportConversationAttachment], to record: CKRecord) throws -> [URL] {
+        var urls: [URL] = []
+        do {
+            for (offset, attachment) in attachments.prefix(3).enumerated() {
+                let index = offset + 1
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try attachment.data.write(to: url, options: .atomic)
+                urls.append(url)
+                record[ReportConversationCloudKitSchema.MessageField.attachment(index)] = CKAsset(fileURL: url)
+                record[ReportConversationCloudKitSchema.MessageField.attachmentName(index)] = attachment.name as CKRecordValue
+                record[ReportConversationCloudKitSchema.MessageField.attachmentType(index)] = attachment.typeIdentifier as CKRecordValue
+            }
+            record[ReportConversationCloudKitSchema.MessageField.attachmentCount] = urls.count as CKRecordValue
+            return urls
+        } catch {
+            urls.forEach { try? FileManager.default.removeItem(at: $0) }
+            throw error
+        }
+    }
+
+    private func readAttachments(from record: CKRecord) -> [ReportConversationAttachment] {
+        (0..<min(3, record.voxConversationInt(ReportConversationCloudKitSchema.MessageField.attachmentCount))).compactMap { offset in
+            let index = offset + 1
+            guard let url = (record[ReportConversationCloudKitSchema.MessageField.attachment(index)] as? CKAsset)?.fileURL,
+                  let data = try? Data(contentsOf: url) else { return nil }
+            return ReportConversationAttachment(
+                name: record.voxConversationString(ReportConversationCloudKitSchema.MessageField.attachmentName(index), fallback: "Attachment \(index)"),
+                typeIdentifier: record.voxConversationString(ReportConversationCloudKitSchema.MessageField.attachmentType(index), fallback: "public.data"),
+                data: data
             )
         }
     }
@@ -257,7 +517,8 @@ final class VoxiverseReportConversationService: ObservableObject {
                 senderRole: ReportConversationSenderRole(rawValue: record.voxConversationString(ReportConversationCloudKitSchema.MessageField.senderRole)) ?? .unknown,
                 body: record.voxConversationString(ReportConversationCloudKitSchema.MessageField.body),
                 createdAt: record.voxConversationDate(ReportConversationCloudKitSchema.MessageField.createdAt) ?? record.creationDate ?? Date(),
-                creatorRecordName: record.creatorUserRecordID?.recordName ?? ""
+                creatorRecordName: record.creatorUserRecordID?.recordName ?? "",
+                attachments: readAttachments(from: record)
             )
         }
         .sorted { $0.createdAt < $1.createdAt }
@@ -268,6 +529,7 @@ final class VoxiverseReportConversationService: ObservableObject {
             id: root.voxConversationString(ReportConversationCloudKitSchema.ConversationField.conversationID, fallback: root.recordID.recordName),
             context: context,
             state: ReportConversationState(rawValue: root.voxConversationString(ReportConversationCloudKitSchema.ConversationField.invitationState)) ?? .notStarted,
+            acceptsReplies: (root[ReportConversationCloudKitSchema.ConversationField.acceptsReplies] as? NSNumber)?.boolValue ?? true,
             recordID: root.recordID,
             shareURL: URL(string: root.voxConversationString(ReportConversationCloudKitSchema.ConversationField.shareURL)),
             createdAt: root.voxConversationDate(ReportConversationCloudKitSchema.ConversationField.createdAt) ?? root.creationDate,

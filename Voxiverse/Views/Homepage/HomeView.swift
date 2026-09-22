@@ -46,8 +46,8 @@ struct HomeView: View {
                         .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
 
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 12) {
-                            ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
+                        HStack(spacing: 12) {
+                            ForEach(Array(apps.enumerated()), id: \.offset) { index, app in
                                 NavigationLink(value: VoxiverseRoute.appDetail(app.id)) {
                                     VoxiverseAppCard(app: app, reports: reports)
                                         .voxiverseFrostedBorder(
@@ -58,6 +58,7 @@ struct HomeView: View {
                                 .buttonStyle(.plain)
                             }
                         }
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, VoxiverseSpacing.pageHorizontal)
                     }
                 }
@@ -184,7 +185,7 @@ struct VoxiverseActivityRow: View {
         switch activity.assetName {
         case "bug", "document":
             return VoxiverseFrostedPalette.blue
-        case "chatsparkle":
+        case "chatstar":
             return VoxiverseFrostedPalette.purple
         default:
             return VoxiverseFrostedPalette.purple

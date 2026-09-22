@@ -23,8 +23,10 @@ enum VoxiverseCloudKitReportSync {
             for record in records {
                 if VoxiverseReportType(rawValue: string(record, "reportType")) == .featureRequest {
                     try upsertFeatureRequest(record, into: modelContext)
+                    try upsertConversationIndex(from: record, sourceKind: .featureRequest, into: modelContext)
                 } else {
                     try upsert(record, into: modelContext)
+                    try upsertConversationIndex(from: record, sourceKind: .report, into: modelContext)
                 }
             }
             if modelContext.hasChanges {
@@ -390,6 +392,105 @@ enum VoxiverseCloudKitReportSync {
         request.updatedDate = record["updatedAt"] as? Date ?? record["submittedAt"] as? Date ?? request.updatedDate
         request.submitter = reporterName(from: record, fallback: request.submitter)
         request.internalNotes = string(record, "internalNotes")
+    }
+
+    @MainActor
+    private static func upsertConversationIndex(
+        from record: CKRecord,
+        sourceKind: VoxiverseConversationSourceKind,
+        into modelContext: ModelContext
+    ) throws {
+        let reportID = sourceKind == .featureRequest
+            ? string(record, "requestID", fallback: string(record, "reportID", fallback: record.recordID.recordName))
+            : string(record, "reportID", fallback: record.recordID.recordName)
+        let conversationID = "\(sourceKind.rawValue):\(reportID)"
+        let descriptor = FetchDescriptor<VoxiverseConversation>(
+            predicate: #Predicate { $0.id == conversationID }
+        )
+        let existing = try modelContext.fetch(descriptor).first
+        let conversationRecordName = string(
+            record,
+            ReportConversationCloudKitSchema.PublicReportField.conversationRecordName
+        )
+
+        guard !conversationRecordName.isEmpty else {
+            if let existing {
+                modelContext.delete(existing)
+            }
+            return
+        }
+
+        let sourceRecordID: String
+        if sourceKind == .featureRequest {
+            let requestDescriptor = FetchDescriptor<VoxiverseFeatureRequest>(
+                predicate: #Predicate { $0.id == reportID }
+            )
+            sourceRecordID = try modelContext.fetch(requestDescriptor).first?.id ?? reportID
+        } else {
+            let reportDescriptor = FetchDescriptor<VoxiverseReport>(
+                predicate: #Predicate { $0.reportID == reportID }
+            )
+            sourceRecordID = try modelContext.fetch(reportDescriptor).first?.id ?? reportID
+        }
+
+        let appID = canonicalAppID(from: record)
+        let appName = try managedApp(for: appID, in: modelContext)?.name
+            ?? string(record, "appName", fallback: appID)
+        let reportType = sourceKind == .featureRequest
+            ? VoxiverseReportType.featureRequest.rawValue
+            : string(record, "reportType", fallback: VoxiverseReportType.bugReport.rawValue)
+        let state = ReportConversationState(
+            rawValue: string(
+                record,
+                ReportConversationCloudKitSchema.PublicReportField.conversationState,
+                fallback: ReportConversationState.invited.rawValue
+            )
+        ) ?? .invited
+        let lastActivity = record[ReportConversationCloudKitSchema.PublicReportField.conversationLastMessageAt] as? Date
+            ?? record[ReportConversationCloudKitSchema.PublicReportField.conversationUpdatedAt] as? Date
+            ?? record.modificationDate
+            ?? Date.now
+
+        let conversation = existing ?? VoxiverseConversation(
+            id: conversationID,
+            reportID: reportID,
+            sourceRecordID: sourceRecordID,
+            sourceKind: sourceKind,
+            appID: appID,
+            appName: appName,
+            reportType: reportType,
+            reportTitle: string(record, "title"),
+            reporterDisplayName: reporterName(from: record),
+            conversationRecordName: conversationRecordName,
+            conversationZoneName: string(record, ReportConversationCloudKitSchema.PublicReportField.conversationZoneName),
+            conversationZoneOwnerName: string(record, ReportConversationCloudKitSchema.PublicReportField.conversationZoneOwnerName),
+            conversationState: state,
+            lastActivityAt: lastActivity
+        )
+
+        conversation.reportID = reportID
+        conversation.sourceRecordID = sourceRecordID
+        conversation.sourceKind = sourceKind
+        conversation.appID = appID
+        conversation.appName = appName
+        conversation.reportType = reportType
+        conversation.reportTitle = string(record, "title")
+        conversation.reporterDisplayName = reporterName(from: record)
+        conversation.conversationRecordName = conversationRecordName
+        conversation.conversationZoneName = string(
+            record,
+            ReportConversationCloudKitSchema.PublicReportField.conversationZoneName
+        )
+        conversation.conversationZoneOwnerName = string(
+            record,
+            ReportConversationCloudKitSchema.PublicReportField.conversationZoneOwnerName
+        )
+        conversation.conversationStateRawValue = state.rawValue
+        conversation.lastActivityAt = lastActivity
+
+        if existing == nil {
+            modelContext.insert(conversation)
+        }
     }
 
     private static func string(_ record: CKRecord, _ key: String, fallback: String = "") -> String {

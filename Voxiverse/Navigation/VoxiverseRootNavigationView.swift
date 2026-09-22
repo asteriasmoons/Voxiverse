@@ -6,12 +6,12 @@ struct VoxiverseRootNavigationView: View {
     let apps: [VoxiverseManagedApp]
     let reports: [VoxiverseReport]
     let featureRequests: [VoxiverseFeatureRequest]
+    let conversations: [VoxiverseConversation]
     let activities: [VoxiverseActivity]
 
     @State private var selectedTab: VoxiverseTab = .home
     @State private var homePath: [VoxiverseRoute] = []
     @State private var appsPath: [VoxiverseRoute] = []
-    @State private var centerActionPath: [VoxiverseRoute] = []
     @State private var reportsPath: [VoxiverseRoute] = []
     @State private var requestsPath: [VoxiverseRoute] = []
 
@@ -54,7 +54,7 @@ struct VoxiverseRootNavigationView: View {
 
         case .apps:
             NavigationStack(path: $appsPath) {
-                AppsView(apps: apps, reports: reports)
+                AppsView(conversations: conversations)
                     .navigationDestination(for: VoxiverseRoute.self) { route in
                         destination(for: route)
                     }
@@ -62,10 +62,7 @@ struct VoxiverseRootNavigationView: View {
             .toolbar(.hidden, for: .navigationBar)
 
         case .centerAction:
-            NavigationStack(path: $centerActionPath) {
-                CenterActionView()
-            }
-            .toolbar(.hidden, for: .navigationBar)
+            EmptyView()
 
         case .reports:
             NavigationStack(path: $reportsPath) {
@@ -110,7 +107,13 @@ struct VoxiverseRootNavigationView: View {
 
         case .reportConversation(let reportID):
             if let report = reports.first(where: { $0.id == reportID }) {
-                ReportDetailView(report: report, apps: apps, openConversationOnAppear: true)
+                VoxiverseConversationDestination(
+                    context: ReportConversationContext(
+                        report: report,
+                        app: apps.matchingApp(id: report.appID),
+                        conversation: conversations.first { $0.sourceRecordID == report.id }
+                    )
+                )
             } else {
                 missingDestination(title: "Report Not Found", assetName: "document")
             }
@@ -124,7 +127,13 @@ struct VoxiverseRootNavigationView: View {
 
         case .featureRequestConversation(let requestID):
             if let request = featureRequests.first(where: { $0.id == requestID }) {
-                FeatureRequestDetailView(request: request, apps: apps, openConversationOnAppear: true)
+                VoxiverseConversationDestination(
+                    context: ReportConversationContext(
+                        request: request,
+                        app: apps.matchingApp(id: request.appID),
+                        conversation: conversations.first { $0.sourceRecordID == request.id }
+                    )
+                )
             } else {
                 missingDestination(title: "Feature Request Not Found", assetName: "bulbxoxo")
             }
@@ -158,6 +167,19 @@ struct VoxiverseRootNavigationView: View {
             Spacer()
         }
         .background(VoxiverseColor.background)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+private struct VoxiverseConversationDestination: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let context: ReportConversationContext
+
+    var body: some View {
+        VoxiverseReportConversationView(context: context) {
+            dismiss()
+        }
         .navigationBarBackButtonHidden(true)
     }
 }

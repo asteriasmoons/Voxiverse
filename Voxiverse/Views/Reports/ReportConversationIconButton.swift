@@ -38,7 +38,7 @@ struct ReportConversationIconButton: View {
         if frosted {
             // The chat glyph itself becomes frosted glass — no flat box.
             VoxiverseFrostedGlassIcon(
-                assetName: "chatsparkle",
+                assetName: "chatstar",
                 size: 26,
                 tint: unreadCount > 0 ? VoxiverseFrostedPalette.berry : VoxiverseFrostedPalette.purple
             )
@@ -46,7 +46,7 @@ struct ReportConversationIconButton: View {
             .contentShape(Rectangle())
         } else {
             VoxiverseAssetIcon(
-                assetName: "chatsparkle",
+                assetName: "chatstar",
                 size: 20,
                 tint: unreadCount > 0 ? VoxiverseColor.secondaryAccent : VoxiverseColor.primaryAction
             )
